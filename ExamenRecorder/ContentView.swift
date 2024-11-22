@@ -6,8 +6,14 @@
 //
 
 import SwiftUI
-import CoreData
 import AVFoundation
+import CoreData
+
+extension Institution {
+    var identifier: UUID {
+        id ?? UUID()
+    }
+}
 
 class AudioRecorder: NSObject, ObservableObject {
     @Published var isRecording = false
@@ -90,11 +96,237 @@ extension AudioPlayer: AVAudioPlayerDelegate {
     }
 }
 
+struct Level: Identifiable, Hashable {
+    let id = UUID()
+    var name: String
+    
+    static func == (lhs: Level, rhs: Level) -> Bool {
+        return lhs.id == rhs.id
+    }
+    
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+    }
+}
+
+struct Institute: Identifiable {
+    let id = UUID()
+    var name: String
+    var street: String
+    var city: String
+    var country: String
+    var postalCode: String
+}
+
+struct InstituteFormView: View {
+    @Environment(\.managedObjectContext) private var viewContext
+    @Environment(\.dismiss) private var dismiss
+    @State private var instituteName: String
+    @State private var street: String
+    @State private var city: String
+    @State private var country: String
+    @State private var postalCode: String
+    @State private var showAlert = false
+    
+    var institute: Institution?
+    var isEditing: Bool
+    
+    init(institute: Institution? = nil) {
+        self.institute = institute
+        self.isEditing = institute != nil
+        
+        // Initialize state variables
+        _instituteName = State(initialValue: institute?.name ?? "")
+        _street = State(initialValue: institute?.street ?? "")
+        _city = State(initialValue: institute?.city ?? "")
+        _country = State(initialValue: institute?.country ?? "")
+        _postalCode = State(initialValue: institute?.postalCode ?? "")
+    }
+    
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("Institute Details")) {
+                    TextField("Name", text: $instituteName)
+                    TextField("Street", text: $street)
+                    TextField("City", text: $city)
+                    TextField("Country", text: $country)
+                    TextField("Postal Code", text: $postalCode)
+                }
+            }
+            .navigationTitle(isEditing ? "Edit Institute" : "Add Institute")
+            .navigationBarItems(
+                leading: Button("Cancel") {
+                    dismiss()
+                },
+                trailing: Button(isEditing ? "Update" : "Save") {
+                    if isEditing {
+                        updateInstitute()
+                    } else {
+                        saveNewInstitute()
+                    }
+                }
+                .disabled(instituteName.isEmpty)
+            )
+        }
+        .alert("Error", isPresented: $showAlert) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Failed to \(isEditing ? "update" : "save") institute")
+        }
+    }
+    
+    private func updateInstitute() {
+        guard let institute = institute else { return }
+        
+        institute.name = instituteName
+        institute.street = street
+        institute.city = city
+        institute.country = country
+        institute.postalCode = postalCode
+        
+        do {
+            try viewContext.save()
+            dismiss()
+        } catch {
+            showAlert = true
+        }
+    }
+    
+    private func saveNewInstitute() {
+        let newInstitute = Institution(context: viewContext)
+        newInstitute.id = UUID()
+        newInstitute.name = instituteName
+        newInstitute.street = street
+        newInstitute.city = city
+        newInstitute.country = country
+        newInstitute.postalCode = postalCode
+        newInstitute.timestamp = Date()
+        
+        do {
+            try viewContext.save()
+            dismiss()
+        } catch {
+            showAlert = true
+        }
+    }
+}
+
+struct SettingsView: View {
+    @Environment(\.managedObjectContext) private var viewContext
+    @Environment(\.dismiss) private var dismiss
+    @State private var levels: [Level] = [
+        Level(name: "A1"),
+        Level(name: "A2"),
+        Level(name: "B1"),
+        Level(name: "B2"),
+        Level(name: "C1"),
+        Level(name: "C2")
+    ]
+    @State private var newLevelName = ""
+    @State private var showingInstituteForm = false
+    @State private var selectedInstitute: Institution?
+    
+    @FetchRequest(
+        entity: Institution.entity(),
+        sortDescriptors: [NSSortDescriptor(keyPath: \Institution.timestamp, ascending: false)],
+        animation: .default)
+    private var institutes: FetchedResults<Institution>
+    
+    var body: some View {
+        NavigationView {
+            List {
+                Section(header: Text("Add New Level")) {
+                    HStack {
+                        TextField("Level Name", text: $newLevelName)
+                        Button(action: addLevel) {
+                            Image(systemName: "plus.circle.fill")
+                        }
+                        .disabled(newLevelName.isEmpty)
+                    }
+                }
+                
+                Section(header: Text("Existing Levels")) {
+                    ForEach(levels) { level in
+                        Text(level.name)
+                    }
+                    .onDelete(perform: deleteLevels)
+                }
+                
+                Section(header: Text("Institutes")) {
+                    Button(action: {
+                        selectedInstitute = nil
+                        showingInstituteForm = true
+                    }) {
+                        Label("Add Institute", systemImage: "plus")
+                    }
+                    
+                    ForEach(institutes) { institute in
+                        Button(action: {
+                            selectedInstitute = institute
+                            showingInstituteForm = true
+                        }) {
+                            VStack(alignment: .leading) {
+                                Text(institute.name ?? "")
+                                    .font(.headline)
+                                Text("\(institute.street ?? ""), \(institute.city ?? "")")
+                                    .font(.subheadline)
+                                    .foregroundColor(.gray)
+                            }
+                        }
+                        .foregroundColor(.primary)
+                    }
+                    .onDelete(perform: deleteInstitutes)
+                }
+            }
+            .navigationTitle("Settings")
+            .navigationBarItems(
+                leading: Button("Done") {
+                    dismiss()
+                }
+            )
+        }
+        .sheet(isPresented: $showingInstituteForm) {
+            if let institute = selectedInstitute {
+                InstituteFormView(institute: institute)
+            } else {
+                InstituteFormView()
+            }
+        }
+    }
+    
+    private func addLevel() {
+        let newLevel = Level(name: newLevelName)
+        levels.append(newLevel)
+        newLevelName = ""
+    }
+    
+    private func deleteLevels(at offsets: IndexSet) {
+        levels.remove(atOffsets: offsets)
+    }
+    
+    private func deleteInstitutes(at offsets: IndexSet) {
+        withAnimation {
+            for index in offsets {
+                let institute = institutes[index]
+                viewContext.delete(institute)
+            }
+            
+            do {
+                try viewContext.save()
+            } catch {
+                print("Error deleting institute: \(error.localizedDescription)")
+            }
+        }
+    }
+}
+
 struct ContentView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @StateObject private var audioRecorder = AudioRecorder()
     @State private var showingPermissionAlert = false
     @State private var currentRecordingURL: URL?
+    @State private var showingSettings = false
 
     @FetchRequest(
         entity: Item.entity(),
@@ -142,8 +374,16 @@ struct ContentView: View {
             .navigationTitle("Recordings")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    EditButton()
+                    HStack {
+                        EditButton()
+                        Button(action: { showingSettings = true }) {
+                            Image(systemName: "gear")
+                        }
+                    }
                 }
+            }
+            .sheet(isPresented: $showingSettings) {
+                SettingsView()
             }
             .alert("Microphone Access Required", isPresented: $showingPermissionAlert) {
                 Button("Settings", action: openSettings)

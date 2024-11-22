@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <model type="com.apple.IDECoreDataModeler.DataModel" documentVersion="1.0" lastSavedToolsVersion="23507" systemVersion="24B91" minimumToolsVersion="Automatic" sourceLanguage="Swift" usedWithCloudKit="YES" userDefinedModelVersionIdentifier="">
+    <entity name="Institution" representedClassName="Institution" syncable="YES" codeGenerationType="class">
+        <attribute name="city" optional="YES" attributeType="String"/>
+        <attribute name="country" optional="YES" attributeType="String"/>
+        <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
+        <attribute name="name" optional="YES" attributeType="String"/>
+        <attribute name="postalCode" optional="YES" attributeType="String"/>
+        <attribute name="street" optional="YES" attributeType="String"/>
+        <attribute name="timestamp" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
+    </entity>
     <entity name="Item" representedClassName="Item" syncable="YES" codeGenerationType="class">
         <attribute name="candidateLevel" optional="YES" attributeType="String"/>
         <attribute name="candidateName" optional="YES" attributeType="String"/>
@@ -9,12 +18,6 @@
         <attribute name="examinerName1" optional="YES" attributeType="String"/>
         <attribute name="examinerName2" optional="YES" attributeType="String"/>
         <attribute name="id" optional="YES" attributeType="UUID" usesScalarValueType="NO"/>
-        <attribute name="institutCity" optional="YES" attributeType="String"/>
-        <attribute name="institutCountry" optional="YES" attributeType="String"/>
-        <attribute name="institutName" optional="YES" attributeType="String"/>
-        <attribute name="institutStreet" optional="YES" attributeType="String"/>
-        <attribute name="instuteStreet" optional="YES" attributeType="String"/>
-        <attribute name="instutuPLZ" optional="YES" attributeType="String"/>
         <attribute name="timestamp" optional="YES" attributeType="Date" usesScalarValueType="NO"/>
     </entity>
 </model>
