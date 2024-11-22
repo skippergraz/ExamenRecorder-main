@@ -10,45 +10,50 @@ import CoreData
 import AVFoundation
 import UIKit
 
-extension Institution {
+struct InstitutionModel: Identifiable {
+    let id: UUID
+    let name: String
+    let street: String?
+    let city: String?
+    let postalCode: String?
+    let country: String?
+    
+    init(entity: Institution) {
+        self.id = entity.id ?? UUID()
+        self.name = entity.name ?? ""
+        self.street = entity.street
+        self.city = entity.city
+        self.postalCode = entity.postalCode
+        self.country = entity.country
+    }
+}
+
+extension InstitutionModel {
     var identifier: UUID {
-        id ?? UUID()
+        id
     }
 }
 
 class AudioRecorder: NSObject, ObservableObject {
-    @Published var isRecording = false
     private var audioRecorder: AVAudioRecorder?
-    private var recordingSession: AVAudioSession?
-    
-    override init() {
-        super.init()
-        setupSession()
-    }
-    
-    private func setupSession() {
-        recordingSession = AVAudioSession.sharedInstance()
-        do {
-            try recordingSession?.setCategory(.playAndRecord, mode: .default)
-            try recordingSession?.setActive(true)
-        } catch {
-            print("Failed to set up recording session: \(error.localizedDescription)")
-        }
-    }
+    @Published var isRecording = false
     
     func startRecording(completion: @escaping (URL?) -> Void) {
-        let uuid = UUID().uuidString
-        let audioFilename = FileManager.default.temporaryDirectory.appendingPathComponent("\(uuid).m4a")
+        let audioFilename = getDocumentsDirectory().appendingPathComponent("\(UUID().uuidString).m4a")
         
         let settings = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: 44100,
-            AVNumberOfChannelsKey: 1,
+            AVNumberOfChannelsKey: 2,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
         ]
         
         do {
+            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default)
+            try AVAudioSession.sharedInstance().setActive(true)
+            
             audioRecorder = try AVAudioRecorder(url: audioFilename, settings: settings)
+            audioRecorder?.delegate = self
             audioRecorder?.record()
             isRecording = true
             completion(audioFilename)
@@ -59,11 +64,26 @@ class AudioRecorder: NSObject, ObservableObject {
     }
     
     func stopRecording() -> URL? {
-        audioRecorder?.stop()
-        let recordingURL = audioRecorder?.url
-        audioRecorder = nil
+        guard let recorder = audioRecorder, recorder.isRecording else { return nil }
+        
+        recorder.stop()
         isRecording = false
-        return recordingURL
+        let url = recorder.url
+        audioRecorder = nil
+        return url
+    }
+    
+    private func getDocumentsDirectory() -> URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+}
+
+extension AudioRecorder: AVAudioRecorderDelegate {
+    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
+        if !flag {
+            print("Recording failed")
+        }
+        isRecording = false
     }
 }
 
@@ -119,9 +139,10 @@ struct Institute: Identifiable {
     var postalCode: String
 }
 
-struct InstituteFormView: View {
+struct InstitutionFormView: View {
     @Environment(\.managedObjectContext) private var viewContext
     @Environment(\.dismiss) private var dismiss
+    
     @State private var instituteName: String
     @State private var street: String
     @State private var city: String
@@ -129,56 +150,55 @@ struct InstituteFormView: View {
     @State private var postalCode: String
     @State private var showAlert = false
     
-    var institute: Institution?
+    var institution: Institution?
     var isEditing: Bool
     
-    init(institute: Institution? = nil) {
-        self.institute = institute
-        self.isEditing = institute != nil
+    init(institution: Institution? = nil) {
+        self.institution = institution
+        self.isEditing = institution != nil
         
         // Initialize state variables
-        _instituteName = State(initialValue: institute?.name ?? "")
-        _street = State(initialValue: institute?.street ?? "")
-        _city = State(initialValue: institute?.city ?? "")
-        _country = State(initialValue: institute?.country ?? "")
-        _postalCode = State(initialValue: institute?.postalCode ?? "")
+        _instituteName = State(initialValue: institution?.name ?? "")
+        _street = State(initialValue: institution?.street ?? "")
+        _city = State(initialValue: institution?.city ?? "")
+        _country = State(initialValue: institution?.country ?? "")
+        _postalCode = State(initialValue: institution?.postalCode ?? "")
     }
     
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("Institute Details")) {
-                    TextField("Name", text: $instituteName)
+                Section(header: Text("Institution Details")) {
+                    TextField("Institution Name", text: $instituteName)
                     TextField("Street", text: $street)
                     TextField("City", text: $city)
                     TextField("Country", text: $country)
                     TextField("Postal Code", text: $postalCode)
                 }
             }
-            .navigationTitle(isEditing ? "Edit Institute" : "Add Institute")
+            .navigationTitle(isEditing ? "Edit Institution" : "New Institution")
             .navigationBarItems(
                 leading: Button("Cancel") {
                     dismiss()
                 },
-                trailing: Button(isEditing ? "Update" : "Save") {
+                trailing: Button(isEditing ? "Save" : "Add") {
                     if isEditing {
                         updateInstitute()
                     } else {
                         saveNewInstitute()
                     }
                 }
-                .disabled(instituteName.isEmpty)
             )
-        }
-        .alert("Error", isPresented: $showAlert) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text("Failed to \(isEditing ? "update" : "save") institute")
+            .alert("Error", isPresented: $showAlert) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("Failed to save institution. Please try again.")
+            }
         }
     }
     
     private func updateInstitute() {
-        guard let institute = institute else { return }
+        guard let institute = institution else { return }
         
         institute.name = instituteName
         institute.street = street
@@ -223,30 +243,32 @@ struct SettingsView: View {
         entity: Institution.entity(),
         sortDescriptors: [NSSortDescriptor(keyPath: \Institution.name, ascending: true)],
         animation: .default)
-    private var institutes: FetchedResults<Institution>
+    private var institutions: FetchedResults<Institution>
     
     var body: some View {
         NavigationView {
             List {
                 Section(header: Text("Institutes")) {
                     Button(action: {
-                        selectedInstitute = nil
                         showingInstituteForm = true
                     }) {
                         Label("Add Institute", systemImage: "plus")
                     }
                     
-                    ForEach(institutes) { institute in
+                    ForEach(institutions) { institution in
                         Button(action: {
-                            selectedInstitute = institute
+                            selectedInstitute = institution
                             showingInstituteForm = true
                         }) {
                             VStack(alignment: .leading) {
-                                Text(institute.name ?? "")
+                                Text(institution.name ?? "")
                                     .font(.headline)
-                                Text("\(institute.street ?? ""), \(institute.city ?? "")")
-                                    .font(.subheadline)
-                                    .foregroundColor(.gray)
+                                if let street = institution.street,
+                                   let city = institution.city {
+                                    Text("\(street), \(city)")
+                                        .font(.subheadline)
+                                        .foregroundColor(.gray)
+                                }
                             }
                         }
                         .foregroundColor(.primary)
@@ -255,32 +277,24 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
-            .navigationBarItems(
-                leading: Button("Done") {
-                    dismiss()
-                }
-            )
-        }
-        .sheet(isPresented: $showingInstituteForm) {
-            if let institute = selectedInstitute {
-                InstituteFormView(institute: institute)
-            } else {
-                InstituteFormView()
+            .navigationBarItems(trailing: Button("Done") {
+                dismiss()
+            })
+            .sheet(isPresented: $showingInstituteForm) {
+                InstitutionFormView(institution: selectedInstitute)
+                    .environment(\.managedObjectContext, viewContext)
             }
         }
     }
     
     private func deleteInstitutes(at offsets: IndexSet) {
         withAnimation {
-            for index in offsets {
-                let institute = institutes[index]
-                viewContext.delete(institute)
-            }
+            offsets.map { institutions[$0] }.forEach(viewContext.delete)
             
             do {
                 try viewContext.save()
             } catch {
-                print("Error deleting institute: \(error.localizedDescription)")
+                print("Error deleting institution: \(error)")
             }
         }
     }
@@ -305,9 +319,13 @@ struct ContentView: View {
         entity: Institution.entity(),
         sortDescriptors: [NSSortDescriptor(keyPath: \Institution.name, ascending: true)],
         animation: .default)
-    private var institutions: FetchedResults<Institution>
+    private var institutionEntities: FetchedResults<Institution>
     
-    private var selectedInstitution: Institution? {
+    private var institutions: [InstitutionModel] {
+        institutionEntities.map { InstitutionModel(entity: $0) }
+    }
+    
+    private var selectedInstitution: InstitutionModel? {
         institutions.first { $0.id == selectedInstitutionId }
     }
 
@@ -357,7 +375,7 @@ struct ContentView: View {
                 List {
                     ForEach(recordings) { recording in
                         NavigationLink {
-                            RecordingDetailView(recording: recording)
+                            RecordingDetailView(recording: recording, institutions: institutions)
                         } label: {
                             RecordingRowView(recording: recording, institutions: institutions)
                         }
@@ -381,22 +399,23 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showingInstitutionPicker) {
                 NavigationView {
-                    List {
-                        ForEach(institutions) { institution in
-                            Button(action: {
-                                selectedInstitutionId = institution.id
-                                showingInstitutionPicker = false
-                            }) {
-                                VStack(alignment: .leading) {
-                                    Text(institution.name ?? "")
-                                        .font(.headline)
-                                    Text("\(institution.street ?? ""), \(institution.city ?? "")")
+                    List(institutions) { institution in
+                        Button(action: {
+                            selectedInstitutionId = institution.id
+                            showingInstitutionPicker = false
+                        }) {
+                            VStack(alignment: .leading) {
+                                Text(institution.name)
+                                    .font(.headline)
+                                if let street = institution.street,
+                                   let city = institution.city {
+                                    Text("\(street), \(city)")
                                         .font(.subheadline)
                                         .foregroundColor(.gray)
                                 }
                             }
-                            .foregroundColor(.primary)
                         }
+                        .foregroundColor(.primary)
                     }
                     .navigationTitle("Select Institution")
                     .navigationBarItems(trailing: Button("Cancel") {
@@ -458,6 +477,7 @@ struct ContentView: View {
     private func saveRecording(from url: URL) {
         do {
             let audioData = try Data(contentsOf: url)
+            print("Audio data size: \(audioData.count) bytes")
             
             let newItem = Item(context: viewContext)
             newItem.timestamp = Date()
@@ -468,12 +488,12 @@ struct ContentView: View {
             withAnimation {
                 do {
                     try viewContext.save()
+                    print("Recording saved successfully to Core Data")
                 } catch {
                     print("Error saving context: \(error.localizedDescription)")
                 }
             }
             
-            // Clean up the temporary file
             try FileManager.default.removeItem(at: url)
             currentRecordingURL = nil
             
@@ -497,9 +517,10 @@ struct ContentView: View {
 
 struct RecordingRowView: View {
     let recording: Item
-    let institutions: FetchedResults<Institution>
+    let institutions: [InstitutionModel]
+    @State private var duration: TimeInterval = 0
     
-    private var institution: Institution? {
+    private var institution: InstitutionModel? {
         institutions.first { $0.id == recording.institutionId }
     }
     
@@ -510,18 +531,58 @@ struct RecordingRowView: View {
             HStack {
                 Text("Recording #\(recording.objectID.uriRepresentation().lastPathComponent)")
                 if let institution = institution {
-                    Text("• \(institution.name ?? "")")
+                    Text("• \(institution.name)")
                 }
+                Spacer()
+                Text(formatDuration(duration))
+                    .foregroundColor(.gray)
             }
             .font(.subheadline)
             .foregroundColor(.gray)
         }
         .padding(.vertical, 4)
+        .task {
+            await calculateDuration()
+        }
+    }
+    
+    private func calculateDuration() async {
+        guard let audioData = recording.candidateRecording else { return }
+        
+        // Create a temporary file URL in the cache directory
+        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let tempURL = cacheDir.appendingPathComponent(UUID().uuidString + ".m4a")
+        
+        do {
+            // Write audio data to temporary file
+            try audioData.write(to: tempURL)
+            
+            // Get audio asset duration without playing
+            let asset = AVURLAsset(url: tempURL)
+            let duration = try await asset.load(.duration)
+            
+            // Update duration on main thread
+            await MainActor.run {
+                self.duration = duration.seconds
+            }
+            
+            // Clean up temporary file
+            try? FileManager.default.removeItem(at: tempURL)
+        } catch {
+            print("Error calculating duration: \(error)")
+        }
+    }
+    
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let minutes = Int(duration) / 60
+        let seconds = Int(duration) % 60
+        return String(format: "%d:%02d", minutes, seconds)
     }
 }
 
 struct RecordingDetailView: View {
     let recording: Item
+    let institutions: [InstitutionModel]
     @Environment(\.managedObjectContext) private var viewContext
     @State private var isPlaying = false
     @State private var audioPlayer: AVAudioPlayer?
@@ -532,14 +593,9 @@ struct RecordingDetailView: View {
     @State private var candidateLevel = ""
     @State private var examinerName1 = ""
     @State private var examinerName2 = ""
+    @State private var duration: TimeInterval = 0
     
-    @FetchRequest(
-        entity: Institution.entity(),
-        sortDescriptors: [NSSortDescriptor(keyPath: \Institution.name, ascending: true)],
-        animation: .default)
-    private var institutions: FetchedResults<Institution>
-    
-    private var institution: Institution? {
+    private var institution: InstitutionModel? {
         institutions.first { $0.id == recording.institutionId }
     }
     
@@ -552,14 +608,33 @@ struct RecordingDetailView: View {
                     Text(recording.timestamp!, formatter: itemFormatter)
                 }
                 
+                HStack {
+                    Text("Duration")
+                    Spacer()
+                    Text(formatDuration(duration))
+                }
+                
                 if let institution = institution {
                     Section(header: Text("Institution")) {
                         VStack(alignment: .leading) {
-                            Text(institution.name ?? "")
+                            Text(institution.name)
                                 .font(.headline)
-                            Text(institution.street ?? "")
-                            Text("\(institution.city ?? ""), \(institution.postalCode ?? "")")
-                            Text(institution.country ?? "")
+                            if let street = institution.street,
+                               let city = institution.city {
+                                Text("\(street), \(city)")
+                                    .font(.subheadline)
+                                    .foregroundColor(.gray)
+                            }
+                            if let postalCode = institution.postalCode {
+                                Text(postalCode)
+                                    .font(.subheadline)
+                                    .foregroundColor(.gray)
+                            }
+                            if let country = institution.country {
+                                Text(country)
+                                    .font(.subheadline)
+                                    .foregroundColor(.gray)
+                            }
                         }
                     }
                 }
@@ -642,20 +717,9 @@ struct RecordingDetailView: View {
         })
         .onAppear {
             setupInitialValues()
-            setupAudioPlayer()
         }
-        .onDisappear {
-            audioPlayer?.stop()
-        }
-        .sheet(isPresented: $showingImagePicker) {
-            ImagePicker(image: $candidateImage)
-                .onChange(of: candidateImage) { newImage in
-                    if let image = newImage,
-                       let imageData = image.jpegData(compressionQuality: 0.8) {
-                        recording.candidatePicture = imageData
-                        try? viewContext.save()
-                    }
-                }
+        .task {
+            await calculateDuration()
         }
     }
     
@@ -666,21 +730,49 @@ struct RecordingDetailView: View {
         examinerName2 = recording.examinerName2 ?? ""
     }
     
-    private func setupAudioPlayer() {
-        if let audioData = recording.candidateRecording {
-            do {
-                audioPlayer = try AVAudioPlayer(data: audioData)
-            } catch {
-                print("Error setting up audio player: \(error.localizedDescription)")
+    private func calculateDuration() async {
+        guard let audioData = recording.candidateRecording else { return }
+        
+        // Create a temporary file URL in the cache directory
+        let cacheDir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let tempURL = cacheDir.appendingPathComponent(UUID().uuidString + ".m4a")
+        
+        do {
+            // Write audio data to temporary file
+            try audioData.write(to: tempURL)
+            
+            // Get audio asset duration without playing
+            let asset = AVURLAsset(url: tempURL)
+            let duration = try await asset.load(.duration)
+            
+            // Update duration on main thread
+            await MainActor.run {
+                self.duration = duration.seconds
             }
+            
+            // Clean up temporary file
+            try? FileManager.default.removeItem(at: tempURL)
+        } catch {
+            print("Error calculating duration: \(error)")
         }
+    }
+    
+    private func formatDuration(_ duration: TimeInterval) -> String {
+        let minutes = Int(duration) / 60
+        let seconds = Int(duration) % 60
+        return String(format: "%d:%02d", minutes, seconds)
     }
     
     private func togglePlayback() {
         if isPlaying {
             audioPlayer?.pause()
         } else {
-            audioPlayer?.play()
+            if let player = audioPlayer {
+                if player.currentTime >= player.duration {
+                    player.currentTime = 0
+                }
+                player.play()
+            }
         }
         isPlaying.toggle()
     }
