@@ -37,39 +37,149 @@ extension InstitutionModel {
 class AudioRecorder: NSObject, ObservableObject {
     private var audioRecorder: AVAudioRecorder?
     @Published var isRecording = false
+    private var audioSession: AVAudioSession
+    
+    override init() {
+        self.audioSession = AVAudioSession.sharedInstance()
+        super.init()
+        setupNotifications()
+    }
+    
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+        cleanupAudioSession()
+    }
+    
+    private func setupNotifications() {
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleInterruption),
+            name: AVAudioSession.interruptionNotification,
+            object: nil)
+        
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleRouteChange),
+            name: AVAudioSession.routeChangeNotification,
+            object: nil)
+    }
+    
+    @objc private func handleInterruption(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
+              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
+            return
+        }
+        
+        switch type {
+        case .began:
+            if isRecording {
+                _ = stopRecording()
+            }
+        case .ended:
+            guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
+            if options.contains(.shouldResume) {
+                // Optionally restart recording
+                print("Audio session interruption ended - can resume")
+            }
+        @unknown default:
+            break
+        }
+    }
+    
+    @objc private func handleRouteChange(notification: Notification) {
+        guard let userInfo = notification.userInfo,
+              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
+            return
+        }
+        
+        switch reason {
+        case .oldDeviceUnavailable:
+            if isRecording {
+                _ = stopRecording()
+            }
+        default:
+            break
+        }
+    }
+    
+    private func cleanupAudioSession() {
+        if isRecording {
+            _ = stopRecording()
+        }
+        
+        do {
+            try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("Error deactivating audio session: \(error.localizedDescription)")
+        }
+    }
     
     func startRecording(completion: @escaping (URL?) -> Void) {
         let audioFilename = getDocumentsDirectory().appendingPathComponent("\(UUID().uuidString).m4a")
         
-        let settings = [
+        // Optimized settings for voice recording
+        let settings: [String: Any] = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 44100,
-            AVNumberOfChannelsKey: 2,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+            AVSampleRateKey: 22050,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+            AVEncoderBitRateKey: 32000
         ]
         
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default)
-            try AVAudioSession.sharedInstance().setActive(true)
+            // Configure audio session
+            try audioSession.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetooth])
+            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
             
+            // Create and configure recorder
             audioRecorder = try AVAudioRecorder(url: audioFilename, settings: settings)
             audioRecorder?.delegate = self
-            audioRecorder?.record()
+            audioRecorder?.isMeteringEnabled = true
+            
+            guard let recorder = audioRecorder else {
+                print("Failed to initialize recorder")
+                completion(nil)
+                return
+            }
+            
+            if !recorder.record() {
+                print("Failed to start recording")
+                completion(nil)
+                return
+            }
+            
             isRecording = true
+            print("Recording started successfully at: \(audioFilename)")
             completion(audioFilename)
+            
         } catch {
-            print("Could not start recording: \(error.localizedDescription)")
+            print("Recording setup failed: \(error.localizedDescription)")
             completion(nil)
         }
     }
     
     func stopRecording() -> URL? {
-        guard let recorder = audioRecorder, recorder.isRecording else { return nil }
+        guard let recorder = audioRecorder, recorder.isRecording else {
+            print("No active recording to stop")
+            return nil
+        }
         
+        let url = recorder.url
         recorder.stop()
         isRecording = false
-        let url = recorder.url
         audioRecorder = nil
+        
+        // Deactivate audio session
+        do {
+            try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            print("Error deactivating audio session: \(error.localizedDescription)")
+        }
+        
+        print("Recording stopped successfully at: \(url)")
         return url
     }
     
@@ -81,24 +191,79 @@ class AudioRecorder: NSObject, ObservableObject {
 extension AudioRecorder: AVAudioRecorderDelegate {
     func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
         if !flag {
-            print("Recording failed")
+            print("Recording failed to finish successfully")
+        } else {
+            print("Recording finished successfully")
+        }
+        isRecording = false
+    }
+    
+    func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
+        if let error = error {
+            print("Recording encode error: \(error.localizedDescription)")
         }
         isRecording = false
     }
 }
 
 class AudioPlayer: NSObject, ObservableObject {
-    @Published var isPlaying = false
     private var audioPlayer: AVAudioPlayer?
+    private var audioSession: AVAudioSession
+    @Published var isPlaying = false
+    @Published var currentTime: TimeInterval = 0
+    private var timer: Timer?
+    
+    override init() {
+        self.audioSession = AVAudioSession.sharedInstance()
+        super.init()
+        setupAudioSession()
+    }
+    
+    deinit {
+        stopPlayback()
+        timer?.invalidate()
+    }
+    
+    private func setupAudioSession() {
+        do {
+            try audioSession.setCategory(.playback, mode: .default)
+            try audioSession.setActive(true)
+        } catch {
+            print("Failed to setup audio session: \(error.localizedDescription)")
+        }
+    }
     
     func startPlayback(audioData: Data) {
+        stopPlayback() // Stop any existing playback
+        
         do {
+            try audioSession.setActive(true)
             audioPlayer = try AVAudioPlayer(data: audioData)
             audioPlayer?.delegate = self
-            audioPlayer?.play()
-            isPlaying = true
+            
+            guard let player = audioPlayer else {
+                print("Failed to create audio player")
+                return
+            }
+            
+            player.prepareToPlay()
+            if player.play() {
+                isPlaying = true
+                print("Playback started successfully")
+                startTimer()
+            } else {
+                print("Failed to start playback")
+            }
         } catch {
-            print("Failed to play recording: \(error.localizedDescription)")
+            print("Playback error: \(error.localizedDescription)")
+        }
+    }
+    
+    private func startTimer() {
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self = self, let player = self.audioPlayer else { return }
+            self.currentTime = player.currentTime
         }
     }
     
@@ -106,6 +271,23 @@ class AudioPlayer: NSObject, ObservableObject {
         audioPlayer?.stop()
         audioPlayer = nil
         isPlaying = false
+        currentTime = 0
+        timer?.invalidate()
+        timer = nil
+        
+        do {
+            try audioSession.setActive(false)
+        } catch {
+            print("Failed to deactivate audio session: \(error.localizedDescription)")
+        }
+    }
+    
+    func togglePlayback(audioData: Data) {
+        if isPlaying {
+            stopPlayback()
+        } else {
+            startPlayback(audioData: audioData)
+        }
     }
 }
 
@@ -113,6 +295,18 @@ extension AudioPlayer: AVAudioPlayerDelegate {
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
         DispatchQueue.main.async {
             self.isPlaying = false
+            self.currentTime = 0
+            self.timer?.invalidate()
+            self.timer = nil
+        }
+    }
+    
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error: Error?) {
+        if let error = error {
+            print("Audio player decode error: \(error.localizedDescription)")
+        }
+        DispatchQueue.main.async {
+            self.stopPlayback()
         }
     }
 }
@@ -584,8 +778,7 @@ struct RecordingDetailView: View {
     let recording: Item
     let institutions: [InstitutionModel]
     @Environment(\.managedObjectContext) private var viewContext
-    @State private var isPlaying = false
-    @State private var audioPlayer: AVAudioPlayer?
+    @StateObject private var audioPlayer = AudioPlayer()
     @State private var showingImagePicker = false
     @State private var candidateImage: UIImage?
     @State private var isEditing = false
@@ -698,11 +891,17 @@ struct RecordingDetailView: View {
                 }
                 
                 Section(header: Text("Audio Recording")) {
-                    Button(action: togglePlayback) {
+                    Button(action: {
+                        if let audioData = recording.candidateRecording {
+                            audioPlayer.togglePlayback(audioData: audioData)
+                        } else {
+                            print("No audio data available")
+                        }
+                    }) {
                         HStack {
-                            Image(systemName: isPlaying ? "pause.circle.fill" : "play.circle.fill")
+                            Image(systemName: audioPlayer.isPlaying ? "pause.circle.fill" : "play.circle.fill")
                                 .font(.system(size: 24))
-                            Text(isPlaying ? "Pause" : "Play")
+                            Text(audioPlayer.isPlaying ? "Pause" : "Play")
                         }
                     }
                 }
@@ -761,20 +960,6 @@ struct RecordingDetailView: View {
         let minutes = Int(duration) / 60
         let seconds = Int(duration) % 60
         return String(format: "%d:%02d", minutes, seconds)
-    }
-    
-    private func togglePlayback() {
-        if isPlaying {
-            audioPlayer?.pause()
-        } else {
-            if let player = audioPlayer {
-                if player.currentTime >= player.duration {
-                    player.currentTime = 0
-                }
-                player.play()
-            }
-        }
-        isPlaying.toggle()
     }
     
     private func saveChanges() {
