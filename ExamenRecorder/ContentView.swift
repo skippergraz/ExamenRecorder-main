@@ -30,7 +30,8 @@ class AudioRecorder: NSObject, ObservableObject {
     }
     
     func startRecording(completion: @escaping (URL?) -> Void) {
-        let audioFilename = FileManager.default.temporaryDirectory.appendingPathComponent("recording.m4a")
+        let uuid = UUID().uuidString
+        let audioFilename = FileManager.default.temporaryDirectory.appendingPathComponent("\(uuid).m4a")
         
         let settings = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
@@ -96,6 +97,7 @@ struct ContentView: View {
     @State private var currentRecordingURL: URL?
 
     @FetchRequest(
+        entity: Item.entity(),
         sortDescriptors: [NSSortDescriptor(keyPath: \Item.timestamp, ascending: false)],
         animation: .default)
     private var recordings: FetchedResults<Item>
@@ -200,9 +202,16 @@ struct ContentView: View {
             
             let newItem = Item(context: viewContext)
             newItem.timestamp = Date()
+            newItem.id = UUID()
             newItem.candidateRecording = audioData
             
-            try viewContext.save()
+            withAnimation {
+                do {
+                    try viewContext.save()
+                } catch {
+                    print("Error saving context: \(error.localizedDescription)")
+                }
+            }
             
             // Clean up the temporary file
             try FileManager.default.removeItem(at: url)
