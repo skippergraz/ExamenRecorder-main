@@ -12,3 +12,4 @@ Future development:
 Just a note from my side, this is almost my first Swift project (I did a small project about 5 years ago and pulished it on the Appstore within a few days for fun). I am heavily using the Windsurf/Claude 3.5 Sonnet AI to move forward and fix my bugs and learn. It's great for me.
 
 To run this project, you need a paid Apple developer account, otherwise you will not be able to use cloudkit. In Sign&Capabilities, add your own team and bundle identifier.
+Be aware that in the simulator sometimes is not working fine for recording and playing the audios, on a device it works fine. I´m using a macbook pro M1.
