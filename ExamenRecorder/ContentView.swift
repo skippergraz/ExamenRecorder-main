@@ -37,83 +37,26 @@ extension InstitutionModel {
 class AudioRecorder: NSObject, ObservableObject {
     private var audioRecorder: AVAudioRecorder?
     @Published var isRecording = false
+    @Published var recordingTime: TimeInterval = 0
     private var audioSession: AVAudioSession
+    private var timer: Timer?
     
     override init() {
         self.audioSession = AVAudioSession.sharedInstance()
         super.init()
-        setupNotifications()
     }
     
     deinit {
-        NotificationCenter.default.removeObserver(self)
-        cleanupAudioSession()
+        stopRecording()
+        timer?.invalidate()
     }
     
-    private func setupNotifications() {
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleInterruption),
-            name: AVAudioSession.interruptionNotification,
-            object: nil)
-        
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(handleRouteChange),
-            name: AVAudioSession.routeChangeNotification,
-            object: nil)
-    }
-    
-    @objc private func handleInterruption(notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
-              let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
-            return
-        }
-        
-        switch type {
-        case .began:
-            if isRecording {
-                _ = stopRecording()
-            }
-        case .ended:
-            guard let optionsValue = userInfo[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-            if options.contains(.shouldResume) {
-                // Optionally restart recording
-                print("Audio session interruption ended - can resume")
-            }
-        @unknown default:
-            break
-        }
-    }
-    
-    @objc private func handleRouteChange(notification: Notification) {
-        guard let userInfo = notification.userInfo,
-              let reasonValue = userInfo[AVAudioSessionRouteChangeReasonKey] as? UInt,
-              let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) else {
-            return
-        }
-        
-        switch reason {
-        case .oldDeviceUnavailable:
-            if isRecording {
-                _ = stopRecording()
-            }
-        default:
-            break
-        }
-    }
-    
-    private func cleanupAudioSession() {
-        if isRecording {
-            _ = stopRecording()
-        }
-        
-        do {
-            try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
-        } catch {
-            print("Error deactivating audio session: \(error.localizedDescription)")
+    private func startTimer() {
+        timer?.invalidate()
+        recordingTime = 0
+        timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self = self, self.isRecording else { return }
+            self.recordingTime += 0.1
         }
     }
     
@@ -152,6 +95,7 @@ class AudioRecorder: NSObject, ObservableObject {
             }
             
             isRecording = true
+            startTimer()
             print("Recording started successfully at: \(audioFilename)")
             completion(audioFilename)
             
@@ -170,6 +114,9 @@ class AudioRecorder: NSObject, ObservableObject {
         let url = recorder.url
         recorder.stop()
         isRecording = false
+        timer?.invalidate()
+        timer = nil
+        recordingTime = 0
         audioRecorder = nil
         
         // Deactivate audio session
@@ -185,6 +132,13 @@ class AudioRecorder: NSObject, ObservableObject {
     
     private func getDocumentsDirectory() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+    }
+    
+    func formatTime(_ time: TimeInterval) -> String {
+        let minutes = Int(time) / 60
+        let seconds = Int(time) % 60
+        let tenths = Int((time * 10).truncatingRemainder(dividingBy: 10))
+        return String(format: "%02d:%02d.%d", minutes, seconds, tenths)
     }
 }
 
@@ -502,7 +456,7 @@ struct ContentView: View {
     @State private var showingSettings = false
     @State private var showingInstitutionPicker = false
     @State private var selectedInstitutionId: UUID?
-
+    
     @FetchRequest(
         entity: Item.entity(),
         sortDescriptors: [NSSortDescriptor(keyPath: \Item.timestamp, ascending: false)],
@@ -522,7 +476,7 @@ struct ContentView: View {
     private var selectedInstitution: InstitutionModel? {
         institutions.first { $0.id == selectedInstitutionId }
     }
-
+    
     var body: some View {
         NavigationView {
             VStack {
@@ -563,6 +517,13 @@ struct ContentView: View {
                             .font(.system(size: 30))
                     }
                     .padding()
+                }
+                
+                if audioRecorder.isRecording {
+                    Text(audioRecorder.formatTime(audioRecorder.recordingTime))
+                        .font(.system(.title2, design: .monospaced))
+                        .foregroundColor(.red)
+                        .padding(.top, 8)
                 }
                 
                 // Recordings List
@@ -625,7 +586,7 @@ struct ContentView: View {
             }
         }
     }
-
+    
     private func requestMicrophonePermission() {
         if #available(iOS 17.0, *) {
             AVAudioApplication.requestRecordPermission { granted in
@@ -667,7 +628,7 @@ struct ContentView: View {
             UIApplication.shared.open(settingsUrl)
         }
     }
-
+    
     private func saveRecording(from url: URL) {
         do {
             let audioData = try Data(contentsOf: url)
